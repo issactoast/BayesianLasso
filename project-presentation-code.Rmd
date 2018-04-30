@@ -1,0 +1,137 @@
+---
+title: "Implementation of blasso"
+author: "SAK LEE"
+date: "April 29, 2018"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Required packages
+
+**lars** has a data set. **mvtnorm** is used for calculating the multivariate normal cdf. **magrittr** is just for readibility of code.
+
+```{r message=FALSE}
+library(lars)
+library(magrittr)
+library(mvtnorm)
+```
+
+## Data description.
+
+**diabets** consists of 3 lists:
+  1. regular data matrix X
+  2. y values
+  3. extend version of data matrix(intersection).
+
+```{r}
+data("diabetes")
+diabetes %>% dim
+
+# Take data matrix and y values.
+X <- diabetes[,1]
+y <- diabetes[,2]
+
+dim(X); length(y)
+colnames(X)
+n <- length(y)
+```
+
+### Normalization & set params.
+
+Data matrix and y values are decentered and set the paramerters for sigma 1 & 2, and tau.
+
+```{r}
+# standardized
+X <- scale(X)
+y <- scale(y)
+
+sigma1 <- 1
+sigma2 <- 0.492
+tau <- 4.25
+```
+
+
+### Enumerate the models.
+
+Since we have 10 indep. variables, we can actually write down the all the possible 1024 models. I stored this information in matrix m.
+
+```{r}
+# expand full possible models
+l <- rep(list(0:1), dim(X)[2])
+m <- expand.grid(l)
+m %>% dim
+head(m)
+```
+
+The elements of matrix m indicates the inclusion of the corresponding variable in the given model. So we can calculate the each number of variables in the possible model by applying the **rowSums** function to matrix m.
+
+```{r}
+k_gamma <- m %>% rowSums()
+k_gamma %>% head
+```
+
+## Calculate the weights for marginal distribution.
+
+First, we need to calculate the weights vector of each models to get the marginal likelihood for a particular model(equation 6 in the paper). **w_gamma** will store the calculated weights.
+
+```{r}
+lik <- log(dnorm(y, mean = 0, sd = sigma1)) %>% sum %>% exp
+
+w_gamma <- rep(0, 2^dim(X)[2])
+
+ptm <- proc.time() ## start of clock and then to end
+for (i in 1:length(w_gamma)){
+  if(k_gamma[i] == 0){
+    w_gamma[i] <- 1
+  } else{
+    X_gamma <- X[,colnames(X)[which(m[i,] == 1)]]
+    z <- expand.grid(rep(list(0:1), k_gamma[i]))
+    result <- 0
+    
+    for (j in 1:dim(z)[1]){
+      sz <- as.numeric(z[j,])
+      temp <- solve(t(X_gamma) %*% X_gamma)
+      mu <- temp %*% (t(X_gamma) %*% y - tau * sigma1 * sz) %>% as.numeric()
+      sig <- sigma1 * temp
+      
+      lower_v <- rep(-Inf, length(sz))
+      lower_v[sz == 1] <- 0
+      
+      upper_v <- rep(0, length(sz))
+      upper_v[sz == 1] <- Inf
+      result <- result + pmvnorm(lower = lower_v, 
+                                 upper = upper_v,
+                                 mean = mu, sigma = sig) /
+                         dmvnorm(rep(0, k_gamma[i]), mean = mu, sigma = sig)
+    }
+    
+    w_gamma[i] <- result
+  }
+  # print(paste(round(i / length(w_gamma) * 100, 2), "%"))
+}
+proc.time()-ptm ## end of clock.
+```
+
+According to the equation 6, we can get a marginal likelihood for each models in **w_gamma** vector. Since the paper assume the bernoulli prior for the model space, the posterior model distribution can be obtained by just normalizing the **w_gamma** vector.
+
+```{r}
+marginal_gamma <- w_gamma * (tau / (2*sigma1))^k_gamma * lik
+posterior_gamma <- marginal_gamma / sum(marginal_gamma)
+sum(posterior_gamma)
+posterior_gamma %>% head()
+```
+
+## Calculating the inclusion prob.
+
+```{r}
+colnX <- X %>% colnames()
+inclusion_p <- rep(0, 10)
+for (i in 1:10){
+  inclusion_p[i] <- posterior_gamma[which(as.numeric(m[,i]) == 1)] %>% sum  
+}
+data.frame(variableName = colnX, prob = inclusion_p)
+```
+
